@@ -1,5 +1,5 @@
-streamlit
-Flask
-Flask-CORS
+flask
+flask-cors
 pandas
 openpyxl
+gunicorn
