@@ -936,6 +936,257 @@ def add_commercial_summary_to_summary(ws, df_barc, df_nct, ps_matched_nct):
     c = ws.cell(row=last, column=1, value=conc)
     c.font = CONC_FONT; c.fill = CONC_FILL; c.alignment = LEFT; c.border = THIN_BORDER
 
+# ── TABSONS SUMMARY sheet ────────────────────────────────────────────────────
+
+def build_tabsons_summary_sheet(ws, df_barc, df_nct,
+                                barc_brands, ps_brand_nct_map, ps_matched_nct):
+    """
+    Single-row summary sheet with 37 columns matching the Tabsons reporting format.
+    Tabsons = NCT (same data, different name).
+    ICA columns are always 0 as per business requirement.
+    """
+    ws.title = "TABSONS SUMMARY"
+
+    # ── Pull channel / date ───────────────────────────────────────────────────
+    channel = safe_str(df_barc["channel name"].iloc[0]) if len(df_barc) else ""
+    date    = safe_str(df_barc["TelecastDate"].iloc[0])  if len(df_barc) else ""
+
+    hms_s = lambda v: hms_to_secs(safe_str(v))
+
+    # ── BARC totals ───────────────────────────────────────────────────────────
+    barc_total_cnt  = len(df_barc)
+    barc_total_secs = sum(hms_s(v) for v in df_barc["TelecastDuration"])
+
+    def barc_cnt(ctype):
+        return len(df_barc[df_barc["BARC ContentType"].apply(safe_str) == ctype])
+    def barc_dur(ctype):
+        return sum(hms_s(v) for v in
+                   df_barc[df_barc["BARC ContentType"].apply(safe_str) == ctype]["TelecastDuration"])
+
+    barc_comm_cnt  = barc_cnt("Commercial")
+    barc_comm_dur  = barc_dur("Commercial")
+    barc_promo_cnt = barc_cnt("Promo")
+    barc_promo_dur = barc_dur("Promo")
+    barc_prog_cnt  = barc_cnt("Program")
+    barc_prog_dur  = barc_dur("Program")
+
+    # BARC PromoSponsor totals (from barc_brands built in analyse_brands)
+    barc_ps_cnt  = sum(v["count"] for v in barc_brands.values())
+    barc_ps_dur  = sum(v["secs"]  for v in barc_brands.values())
+
+    # BARC unique commercial titles
+    barc_unique_comm = df_barc[df_barc["BARC ContentType"].apply(safe_str) == "Commercial"][
+        "BARC Title"].apply(safe_str).replace("", "—").nunique()
+
+    # ── NCT (Tabsons) totals ──────────────────────────────────────────────────
+    nct_reset = df_nct.copy().reset_index(drop=True)
+
+    nct_total_cnt  = len(nct_reset)
+    nct_total_secs = sum(hms_s(v) for v in nct_reset["TelecastDuration"])
+
+    def nct_cnt(ptype, exclude_ps=False):
+        mask = nct_reset["NCT Program Type"].apply(
+                   lambda v: normalise_type(safe_str(v))) == ptype
+        if exclude_ps:
+            mask = mask & (~nct_reset.index.isin(ps_matched_nct))
+        return int(mask.sum())
+
+    def nct_dur(ptype, exclude_ps=False):
+        mask = nct_reset["NCT Program Type"].apply(
+                   lambda v: normalise_type(safe_str(v))) == ptype
+        if exclude_ps:
+            mask = mask & (~nct_reset.index.isin(ps_matched_nct))
+        return sum(hms_s(v) for v in nct_reset[mask]["TelecastDuration"])
+
+    # Commercial: exclude PS-matched rows (same logic as existing SUMMARY sheet)
+    nct_comm_cnt  = nct_cnt("COMMERCIAL", exclude_ps=True)
+    nct_comm_dur  = nct_dur("COMMERCIAL", exclude_ps=True)
+    nct_promo_cnt = nct_cnt("PROMO")
+    nct_promo_dur = nct_dur("PROMO")
+    nct_prog_cnt  = nct_cnt("PROGRAM")
+    nct_prog_dur  = nct_dur("PROGRAM")
+
+    # NCT PromoSponsor (from ps_brand_nct_map built in compare_rows)
+    nct_ps_cnt  = sum(v["count"] for v in ps_brand_nct_map.values())
+    nct_ps_dur  = sum(v["secs"]  for v in ps_brand_nct_map.values())
+
+    # NCT unique commercial brands (excluding PS rows and invalid names)
+    nct_comm_pure = nct_reset[
+        (nct_reset["NCT Program Type"].apply(
+            lambda v: normalise_type(safe_str(v))) == "COMMERCIAL") &
+        (~nct_reset.index.isin(ps_matched_nct))
+    ]
+    valid_nct_brands = nct_comm_pure["NCT brand"].apply(safe_str)
+    valid_nct_brands = valid_nct_brands[
+        (valid_nct_brands != "") &
+        (~valid_nct_brands.str.upper().isin(INVALID_BRAND_NAMES))
+    ]
+    nct_unique_comm = valid_nct_brands.nunique()
+
+    # ── Accuracy % helpers ────────────────────────────────────────────────────
+    def pct(num, den):
+        """Return rounded % string, or '0.00%' if denominator is 0."""
+        if den == 0:
+            return "0.00%"
+        return f"{round((num / den) * 100, 2):.2f}%"
+
+    # ── Build the 37 columns ──────────────────────────────────────────────────
+    HEADERS = [
+        "CHANNEL NAME",
+        "CHANNEL DATE",
+        "TABSONS LINE ITEM",
+        "TABSONS DURATION",
+        "BARC LINE ITEM",
+        "BARC DURATION",
+        "BARC ICA COUNT",
+        "BARC ICA DURATION",
+        "TABSONS ICA (COUNT)",
+        "TABSONS ICA (DURATION)",
+        "TABSONS COMMERCIAL COUNT",
+        "TABSONS COMMERCIAL DURATION",
+        "BARC COMMERCIAL COUNT",
+        "BARC COMMERCIAL DURATION",
+        "ACCURACY-COMMERCIAL COUNT % (TAB)",
+        "ACCURACY DURATION COMMERCIAL % (TAB)",
+        "TABSONS PROMO COUNT",
+        "TABSONS PROMO DURATION",
+        "BARC PROMO COUNT",
+        "BARC PROMO DURATION",
+        "TABSONS PROMO % (COUNT) ACCURACY",
+        "TABSONS PROMO DURATION% (DUR) ACCURACY",
+        "BARC PROMO %",
+        "BARC PROMO DURATION%",
+        "TABSONS PROMO SPONSOR COUNT",
+        "TABSONS PROMO SPONSOR COUNT DURATION",
+        "BARC PROMO SPONSOR COUNT",
+        "BARC PROMO SPONSOR COUNT DURATION",
+        "TABSONS PROMO SPONSOR %",
+        "TABSONS PROMO SPONSOR DURATION%",
+        "TABSONS PROGRAM COUNT",
+        "TABSONS PROGRAM DURATION",
+        "BARC PROGRAM COUNT",
+        "BARC PROGRAM DURATION",
+        "TABSONS PROGRAM DURATION ACCURACY%",
+        "TABSONS UNIQUE COMMERCIAL COUNT",
+        "BARC UNIQUE COMMERCIAL COUNT",
+    ]
+
+    VALUES = [
+        channel,                                                   # CHANNEL NAME
+        date,                                                      # CHANNEL DATE
+        nct_total_cnt,                                             # TABSONS LINE ITEM
+        fmt_hms(nct_total_secs),                                   # TABSONS DURATION
+        barc_total_cnt,                                            # BARC LINE ITEM
+        fmt_hms(barc_total_secs),                                  # BARC DURATION
+        0,                                                         # BARC ICA COUNT
+        fmt_hms(0),                                                # BARC ICA DURATION
+        0,                                                         # TABSONS ICA (COUNT)
+        fmt_hms(0),                                                # TABSONS ICA (DURATION)
+        nct_comm_cnt,                                              # TABSONS COMMERCIAL COUNT
+        fmt_hms(nct_comm_dur),                                     # TABSONS COMMERCIAL DURATION
+        barc_comm_cnt,                                             # BARC COMMERCIAL COUNT
+        fmt_hms(barc_comm_dur),                                    # BARC COMMERCIAL DURATION
+        pct(nct_comm_cnt,  barc_comm_cnt),                         # ACCURACY-COMMERCIAL COUNT %
+        pct(nct_comm_dur,  barc_comm_dur),                         # ACCURACY DURATION COMMERCIAL %
+        nct_promo_cnt,                                             # TABSONS PROMO COUNT
+        fmt_hms(nct_promo_dur),                                    # TABSONS PROMO DURATION
+        barc_promo_cnt,                                            # BARC PROMO COUNT
+        fmt_hms(barc_promo_dur),                                   # BARC PROMO DURATION
+        pct(nct_promo_cnt, barc_promo_cnt),                        # TABSONS PROMO % COUNT ACCURACY
+        pct(nct_promo_dur, barc_promo_dur),                        # TABSONS PROMO DURATION% ACCURACY
+        pct(barc_promo_cnt, barc_total_cnt),                       # BARC PROMO %
+        pct(barc_promo_dur, barc_total_secs),                      # BARC PROMO DURATION%
+        nct_ps_cnt,                                                # TABSONS PROMO SPONSOR COUNT
+        fmt_hms(nct_ps_dur),                                       # TABSONS PROMO SPONSOR DURATION
+        barc_ps_cnt,                                               # BARC PROMO SPONSOR COUNT
+        fmt_hms(barc_ps_dur),                                      # BARC PROMO SPONSOR DURATION
+        pct(nct_ps_cnt,  barc_ps_cnt),                             # TABSONS PROMO SPONSOR %
+        pct(nct_ps_dur,  barc_ps_dur),                             # TABSONS PROMO SPONSOR DURATION%
+        nct_prog_cnt,                                              # TABSONS PROGRAM COUNT
+        fmt_hms(nct_prog_dur),                                     # TABSONS PROGRAM DURATION
+        barc_prog_cnt,                                             # BARC PROGRAM COUNT
+        fmt_hms(barc_prog_dur),                                    # BARC PROGRAM DURATION
+        pct(nct_prog_dur, barc_prog_dur),                          # TABSONS PROGRAM DURATION ACCURACY%
+        nct_unique_comm,                                           # TABSONS UNIQUE COMMERCIAL COUNT
+        barc_unique_comm,                                          # BARC UNIQUE COMMERCIAL COUNT
+    ]
+
+    TOTAL_COLS = len(HEADERS)
+
+    # ── Title row ─────────────────────────────────────────────────────────────
+    ws.merge_cells(f"A1:{get_column_letter(TOTAL_COLS)}1")
+    c = ws["A1"]
+    c.value = f"TABSONS SUMMARY — {channel}  |  {date}"
+    c.font = TITLE_FONT; c.fill = TITLE_FILL; c.alignment = CENTER
+    ws.row_dimensions[1].height = 22
+
+    # ── Header row (row 2) ────────────────────────────────────────────────────
+    # Colour groups for readability
+    GROUP_FILLS = {
+        # col index (1-based) -> fill
+        1:  BARC_FILL,   2:  BARC_FILL,                          # channel info
+        3:  NCT_FILL,    4:  NCT_FILL,                           # tabsons totals
+        5:  BARC_FILL,   6:  BARC_FILL,                          # barc totals
+        7:  WARN_FILL,   8:  WARN_FILL,                          # barc ICA
+        9:  WARN_FILL,   10: WARN_FILL,                          # tabsons ICA
+        11: NCT_FILL,    12: NCT_FILL,                           # tabsons commercial
+        13: BARC_FILL,   14: BARC_FILL,                          # barc commercial
+        15: OK_FILL,     16: OK_FILL,                            # commercial accuracy
+        17: NCT_FILL,    18: NCT_FILL,                           # tabsons promo
+        19: BARC_FILL,   20: BARC_FILL,                          # barc promo
+        21: OK_FILL,     22: OK_FILL,                            # promo count/dur accuracy
+        23: BARC_FILL,   24: BARC_FILL,                          # barc promo %
+        25: PS_FILL,     26: PS_FILL,                            # tabsons PS
+        27: BARC_FILL,   28: BARC_FILL,                          # barc PS
+        29: PS_FILL,     30: PS_FILL,                            # tabsons PS %
+        31: NCT_FILL,    32: NCT_FILL,                           # tabsons program
+        33: BARC_FILL,   34: BARC_FILL,                          # barc program
+        35: OK_FILL,                                             # program accuracy
+        36: NCT_FILL,    37: BARC_FILL,                          # unique commercial
+    }
+
+    for col_i, h in enumerate(HEADERS, 1):
+        fill = GROUP_FILLS.get(col_i, HDR_FILL)
+        # ICA columns: always use WARN fill with darker text to signal "always 0"
+        if "ICA" in h:
+            fill = WARN_FILL
+        cell = ws.cell(row=2, column=col_i, value=h)
+        cell.font      = WHITE_FONT if fill == HDR_FILL else Font(name="Arial", bold=True, size=9, color="1F2937")
+        cell.fill      = fill
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border    = THIN_BORDER
+        ws.column_dimensions[get_column_letter(col_i)].width = 18
+    ws.row_dimensions[2].height = 50
+
+    # ── Data row (row 3) ──────────────────────────────────────────────────────
+    for col_i, val in enumerate(VALUES, 1):
+        fill = GROUP_FILLS.get(col_i, PatternFill())
+        # Accuracy % cells: green if >= 95%, amber if >= 80%, red otherwise
+        is_pct = isinstance(val, str) and val.endswith("%")
+        if is_pct:
+            try:
+                pct_val = float(val.replace("%", ""))
+                if pct_val >= 95:
+                    fill = OK_FILL
+                elif pct_val >= 80:
+                    fill = WARN_FILL
+                else:
+                    fill = ERR_FILL
+            except ValueError:
+                pass
+        # ICA cols: always light amber, value 0
+        if "ICA" in HEADERS[col_i - 1]:
+            fill = PatternFill("solid", fgColor="FFF3CD")
+        cell = ws.cell(row=3, column=col_i, value=val)
+        cell.font      = NORMAL_FONT
+        cell.fill      = fill
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border    = THIN_BORDER
+
+    ws.row_dimensions[3].height = 20
+    ws.freeze_panes = "A3"
+
+
 # ── DETAILED ANALYSIS sheet ───────────────────────────────────────────────────
 
 def build_detailed_analysis_sheet(ws, df_barc, df_nct, threshold, tol):
@@ -1086,6 +1337,10 @@ build_summary_sheet(ws2, df_barc, df_nct, brand_matches,
 ws3 = wb.create_sheet("COMMERCIAL COMPARISION")
 build_commercial_sheet(ws3, df_barc, df_nct, SIMILARITY_THRESHOLD,
                        ps_matched_nct, ps_brand_nct_map)
+
+ws5 = wb.create_sheet("TABSONS SUMMARY")
+build_tabsons_summary_sheet(ws5, df_barc, df_nct,
+                            barc_brands, ps_brand_nct_map, ps_matched_nct)
 
 ws4 = wb.create_sheet("DETAILED ANALYSIS")
 da_rows = build_detailed_analysis_sheet(ws4, df_barc, df_nct,
